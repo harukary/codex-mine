@@ -47,6 +47,7 @@ use serde::Deserialize;
 use similar::DiffableStr;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
@@ -375,13 +376,14 @@ pub fn resolve_config_base_dir_from_cwd(cwd: Option<PathBuf>) -> std::io::Result
 
 fn resolve_config_base_dir(resolved_cwd: &Path) -> std::io::Result<PathBuf> {
     if let Some(repo_codex) = resolve_repo_codex_dir(resolved_cwd)
-        && repo_codex.join(CONFIG_TOML_FILE).is_file() {
-            tracing::info!(
-                "using repository config: {}",
-                repo_codex.join(CONFIG_TOML_FILE).display()
-            );
-            return Ok(repo_codex);
-        }
+        && repo_codex.join(CONFIG_TOML_FILE).is_file()
+    {
+        tracing::info!(
+            "using repository config: {}",
+            repo_codex.join(CONFIG_TOML_FILE).display()
+        );
+        return Ok(repo_codex);
+    }
 
     find_codex_home()
 }
@@ -409,7 +411,17 @@ pub fn resolve_dotenv_base_dir(codex_home: &Path) -> std::io::Result<PathBuf> {
 
 fn has_execpolicy_rules(rules_dir: &Path) -> std::io::Result<bool> {
     match std::fs::read_dir(rules_dir) {
-        Ok(mut entries) => Ok(entries.next().is_some()),
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file() && path.extension() == Some(OsStr::new("rules")) {
+                    return Ok(true);
+                }
+            }
+
+            Ok(false)
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err),
     }
@@ -2093,6 +2105,36 @@ trust_level = "trusted"
             repo_codex.join(CONFIG_TOML_FILE),
             "model = \"repo-model\"\n",
         )?;
+
+        let home_codex = tmp.path().join("home");
+        let home_rules = home_codex.join("rules");
+        fs::create_dir_all(&home_rules)?;
+        fs::write(
+            home_rules.join("default.rules"),
+            r#"prefix_rule(pattern=["custom"], decision="allow")"#,
+        )?;
+        let _guard = EnvVarGuard::set("CODEX_HOME", &home_codex);
+
+        let resolved = resolve_execpolicy_base_dir(&repo_codex)?;
+        let expected_home = fs::canonicalize(&home_codex)?;
+        assert_eq!(resolved, expected_home);
+
+        let policy = load_exec_policy(&repo_codex).await?;
+        let evaluation = policy.check(&["custom".to_string()], &|_| Decision::Prompt);
+        assert_eq!(evaluation.decision, Decision::Allow);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn resolve_execpolicy_base_dir_prefers_home_rules_when_repo_has_non_rule_files()
+    -> anyhow::Result<()> {
+        let tmp = TempDir::new()?;
+        let repo_codex = tmp.path().join("repo").join(CODEX_DIR);
+        let repo_rules = repo_codex.join("rules");
+        fs::create_dir_all(&repo_rules)?;
+        fs::write(repo_rules.join(".gitkeep"), "")?;
 
         let home_codex = tmp.path().join("home");
         let home_rules = home_codex.join("rules");
