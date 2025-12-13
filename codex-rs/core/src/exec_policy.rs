@@ -74,6 +74,9 @@ pub enum ExecPolicyUpdateError {
     #[error("failed to join blocking execpolicy update task: {source}")]
     JoinBlockingTask { source: tokio::task::JoinError },
 
+    #[error("failed to resolve execpolicy directory: {source}")]
+    ResolveCodexHome { source: std::io::Error },
+
     #[error("failed to update in-memory execpolicy: {source}")]
     AddRule {
         #[from]
@@ -138,7 +141,9 @@ pub(crate) async fn append_execpolicy_amendment_and_update(
     current_policy: &Arc<RwLock<Policy>>,
     prefix: &[String],
 ) -> Result<(), ExecPolicyUpdateError> {
-    let policy_path = default_policy_path(codex_home);
+    let policy_base = resolve_execpolicy_base_dir(codex_home)
+        .map_err(|source| ExecPolicyUpdateError::ResolveCodexHome { source })?;
+    let policy_path = default_policy_path(&policy_base);
     let prefix = prefix.to_vec();
     spawn_blocking({
         let policy_path = policy_path.clone();
@@ -330,6 +335,7 @@ mod tests {
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::SandboxPolicy;
     use pretty_assertions::assert_eq;
+    use std::ffi::OsString;
     use std::fs;
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -600,6 +606,58 @@ prefix_rule(pattern=["rm"], decision="forbidden")
             r#"prefix_rule(pattern=["echo", "hello"], decision="allow")
 "#
         );
+    }
+
+    #[tokio::test]
+    async fn append_execpolicy_amendment_respects_resolved_base_dir() {
+        struct EnvVarGuard {
+            key: &'static str,
+            original: Option<OsString>,
+        }
+
+        impl EnvVarGuard {
+            fn new(key: &'static str, value: &Path) -> Self {
+                let original = std::env::var_os(key);
+                // SAFETY: tests adjust process-scoped environment variables in isolation.
+                unsafe {
+                    std::env::set_var(key, value);
+                }
+                Self { key, original }
+            }
+        }
+
+        impl Drop for EnvVarGuard {
+            fn drop(&mut self) {
+                if let Some(value) = self.original.take() {
+                    // SAFETY: tests adjust process-scoped environment variables in isolation.
+                    unsafe {
+                        std::env::set_var(self.key, value);
+                    }
+                } else {
+                    // SAFETY: tests adjust process-scoped environment variables in isolation.
+                    unsafe {
+                        std::env::remove_var(self.key);
+                    }
+                }
+            }
+        }
+
+        let repo_base = tempdir().expect("create repo temp dir");
+        let repo_codex = repo_base.path().join(".codex");
+        std::fs::create_dir(&repo_codex).expect("create repo codex dir");
+
+        let fallback_home = tempdir().expect("create fallback codex home");
+        let _guard = EnvVarGuard::new("CODEX_HOME", fallback_home.path());
+
+        let current_policy = Arc::new(RwLock::new(Policy::empty()));
+        let prefix = vec!["echo".to_string(), "hello".to_string()];
+
+        append_execpolicy_amendment_and_update(&repo_codex, &current_policy, &prefix)
+            .await
+            .expect("update policy");
+
+        assert!(default_policy_path(fallback_home.path()).is_file());
+        assert!(!default_policy_path(&repo_codex).exists());
     }
 
     #[tokio::test]
