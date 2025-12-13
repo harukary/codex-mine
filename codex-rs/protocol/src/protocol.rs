@@ -22,6 +22,7 @@ use crate::num_format::format_with_separators;
 use crate::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crate::parse_command::ParsedCommand;
 use crate::plan_tool::UpdatePlanArgs;
+use crate::subagents::SubAgentDefinition;
 use crate::user_input::UserInput;
 use mcp_types::CallToolResult;
 use mcp_types::RequestId;
@@ -183,6 +184,15 @@ pub enum Op {
 
     /// Request the list of available custom prompts.
     ListCustomPrompts,
+
+    /// Invoke a sub-agent defined in `.codex/subagents` or `$CODEX_HOME/subagents`.
+    RunSubAgent {
+        /// Name of the sub-agent definition to run.
+        name: String,
+
+        /// Input items to pass to the sub-agent.
+        input: Vec<UserInput>,
+    },
 
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
@@ -561,6 +571,12 @@ pub enum EventMsg {
 
     /// List of custom prompts available to the agent.
     ListCustomPromptsResponse(ListCustomPromptsResponseEvent),
+
+    /// Notifies the client that a sub-agent invocation has begun.
+    SubAgentInvocationStarted(SubAgentInvocationStartedEvent),
+
+    /// Notifies the client that a sub-agent invocation has finished.
+    SubAgentInvocationFinished(SubAgentInvocationFinishedEvent),
 
     PlanUpdate(UpdatePlanArgs),
 
@@ -1622,6 +1638,30 @@ impl fmt::Display for McpAuthStatus {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ListCustomPromptsResponseEvent {
     pub custom_prompts: Vec<CustomPrompt>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct SubAgentInvocationStartedEvent {
+    pub subagent: SubAgentDefinition,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct SubAgentInvocationFinishedEvent {
+    pub subagent: SubAgentDefinition,
+    pub status: SubAgentInvocationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SubAgentInvocationStatus {
+    Completed,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

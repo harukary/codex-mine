@@ -62,6 +62,7 @@ mod conversation_manager;
 mod event_mapping;
 pub mod review_format;
 pub mod review_prompts;
+pub mod subagents;
 pub use codex_protocol::protocol::InitialHistory;
 pub use conversation_manager::ConversationManager;
 pub use conversation_manager::NewConversation;

@@ -18,6 +18,7 @@ use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::StreamErrorEvent;
+use codex_core::protocol::SubAgentInvocationStatus;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
@@ -227,6 +228,34 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::TaskStarted(_) => {
                 // Ignore.
+            }
+            EventMsg::SubAgentInvocationStarted(ev) => {
+                ts_msg!(
+                    self,
+                    "{} {}",
+                    "sub-agent:".style(self.magenta).style(self.bold),
+                    ev.subagent.name.style(self.bold)
+                );
+                if let Some(description) = ev.subagent.description.as_deref() {
+                    ts_msg!(self, "  {}", description.style(self.dimmed));
+                }
+            }
+            EventMsg::SubAgentInvocationFinished(ev) => {
+                let status_text = match ev.status {
+                    SubAgentInvocationStatus::Completed => "completed",
+                    SubAgentInvocationStatus::Failed => "failed",
+                    SubAgentInvocationStatus::Cancelled => "cancelled",
+                };
+                ts_msg!(
+                    self,
+                    "{} {} {}",
+                    "sub-agent:".style(self.magenta).style(self.bold),
+                    ev.subagent.name.style(self.bold),
+                    status_text
+                );
+                if let Some(error) = ev.error.as_deref() {
+                    ts_msg!(self, "  {}", error.style(self.red));
+                }
             }
             EventMsg::ElicitationRequest(ev) => {
                 ts_msg!(

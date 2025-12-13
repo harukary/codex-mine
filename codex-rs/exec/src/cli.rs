@@ -94,6 +94,9 @@ pub enum Command {
 
     /// Run a code review against the current repository.
     Review(ReviewArgs),
+
+    /// Run a sub-agent defined in `.codex/subagents`.
+    Subagent(SubagentArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -143,6 +146,17 @@ pub struct ReviewArgs {
     pub commit_title: Option<String>,
 
     /// Custom review instructions. If `-` is used, read from stdin.
+    #[arg(value_name = "PROMPT", value_hint = clap::ValueHint::Other)]
+    pub prompt: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct SubagentArgs {
+    /// Name of the sub-agent definition to invoke.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Prompt to send to the sub-agent. If `-` is used, read from stdin.
     #[arg(value_name = "PROMPT", value_hint = clap::ValueHint::Other)]
     pub prompt: Option<String>,
 }

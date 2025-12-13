@@ -65,6 +65,10 @@ enum InitialOperation {
     Review {
         review_request: ReviewRequest,
     },
+    SubAgent {
+        name: String,
+        items: Vec<UserInput>,
+    },
 }
 
 pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
@@ -310,6 +314,23 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
             let summary = codex_core::review_prompts::user_facing_hint(&review_request.target);
             (InitialOperation::Review { review_request }, summary)
         }
+        (Some(ExecCommand::Subagent(args)), root_prompt, imgs) => {
+            let prompt_text = resolve_prompt(args.prompt.clone().or(root_prompt));
+            let mut items: Vec<UserInput> = imgs
+                .into_iter()
+                .map(|path| UserInput::LocalImage { path })
+                .collect();
+            items.push(UserInput::Text {
+                text: prompt_text.clone(),
+            });
+            (
+                InitialOperation::SubAgent {
+                    name: args.name,
+                    items,
+                },
+                prompt_text,
+            )
+        }
         (Some(ExecCommand::Resume(args)), root_prompt, imgs) => {
             let prompt_arg = args
                 .prompt
@@ -427,6 +448,13 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         InitialOperation::Review { review_request } => {
             let task_id = conversation.submit(Op::Review { review_request }).await?;
             info!("Sent review request with event ID: {task_id}");
+            task_id
+        }
+        InitialOperation::SubAgent { name, items } => {
+            let task_id = conversation
+                .submit(Op::RunSubAgent { name, input: items })
+                .await?;
+            info!("Sent sub-agent request with event ID: {task_id}");
             task_id
         }
     };

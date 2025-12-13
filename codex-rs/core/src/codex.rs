@@ -1567,6 +1567,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::ListCustomPrompts => {
                 handlers::list_custom_prompts(&sess, sub.id.clone()).await;
             }
+            Op::RunSubAgent { name, input } => {
+                handlers::run_subagent(&sess, sub.id.clone(), name, input).await;
+            }
             Op::Undo => {
                 handlers::undo(&sess, sub.id.clone()).await;
             }
@@ -1614,8 +1617,10 @@ mod handlers {
     use crate::mcp::auth::compute_auth_statuses;
     use crate::mcp::collect_mcp_snapshot_from_manager;
     use crate::review_prompts::resolve_review_request;
+    use crate::subagents::discover_subagents;
     use crate::tasks::CompactTask;
     use crate::tasks::RegularTask;
+    use crate::tasks::SubAgentTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandTask;
     use codex_protocol::custom_prompts::CustomPrompt;
@@ -1859,6 +1864,45 @@ mod handlers {
             }),
         };
         sess.send_event_raw(event).await;
+    }
+
+    pub async fn run_subagent(
+        sess: &Arc<Session>,
+        sub_id: String,
+        name: String,
+        input: Vec<UserInput>,
+    ) {
+        let cwd = {
+            let state = sess.state.lock().await;
+            state.session_configuration.cwd.clone()
+        };
+
+        let Some(definition) = discover_subagents(&cwd)
+            .await
+            .into_iter()
+            .find(|entry| entry.name == name)
+        else {
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: format!("Sub-agent '{name}' not found"),
+                    codex_error_info: Some(CodexErrorInfo::BadRequest),
+                }),
+            };
+            sess.send_event_raw(event).await;
+            return;
+        };
+
+        let turn_context = sess
+            .new_turn_with_sub_id(sub_id.clone(), SessionSettingsUpdate::default())
+            .await;
+
+        sess.spawn_task(
+            Arc::clone(&turn_context),
+            input,
+            SubAgentTask::new(definition),
+        )
+        .await;
     }
 
     pub async fn undo(sess: &Arc<Session>, sub_id: String) {
