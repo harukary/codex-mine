@@ -398,7 +398,16 @@ pub fn resolve_execpolicy_base_dir(codex_home: &Path) -> std::io::Result<PathBuf
         return Ok(codex_home.to_path_buf());
     }
 
-    find_codex_home()
+    match find_codex_home() {
+        Ok(home) => Ok(home),
+        Err(err) => {
+            tracing::warn!(
+                "failed to resolve CODEX_HOME for execpolicy fallback: {err}; using {}",
+                codex_home.display()
+            );
+            Ok(codex_home.to_path_buf())
+        }
+    }
 }
 
 pub fn resolve_dotenv_base_dir(codex_home: &Path) -> std::io::Result<PathBuf> {
@@ -2122,6 +2131,22 @@ trust_level = "trusted"
         let policy = load_exec_policy(&repo_codex).await?;
         let evaluation = policy.check(&["custom".to_string()], &|_| Decision::Prompt);
         assert_eq!(evaluation.decision, Decision::Allow);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn resolve_execpolicy_base_dir_uses_repo_when_codex_home_missing() -> anyhow::Result<()> {
+        let tmp = TempDir::new()?;
+        let repo_codex = tmp.path().join("repo").join(CODEX_DIR);
+        fs::create_dir_all(&repo_codex)?;
+
+        let missing_home = tmp.path().join("missing-home");
+        let _guard = EnvVarGuard::set("CODEX_HOME", &missing_home);
+
+        let resolved = resolve_execpolicy_base_dir(&repo_codex)?;
+        assert_eq!(resolved, repo_codex);
 
         Ok(())
     }
