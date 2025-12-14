@@ -239,11 +239,12 @@ async fn exec_windows_sandbox(
         )))
     })?;
     let sandbox_cwd = cwd.clone();
-    let codex_home = resolve_config_base_dir_from_cwd(None).map_err(|err| {
-        CodexErr::Io(io::Error::other(format!(
-            "windows sandbox: failed to resolve codex_home: {err}"
-        )))
-    })?;
+    let codex_home =
+        resolve_config_base_dir_from_cwd(Some(sandbox_cwd.clone())).map_err(|err| {
+            CodexErr::Io(io::Error::other(format!(
+                "windows sandbox: failed to resolve codex_home: {err}"
+            )))
+        })?;
     let spawn_res = tokio::task::spawn_blocking(move || {
         run_windows_sandbox_capture(
             policy_str.as_str(),
