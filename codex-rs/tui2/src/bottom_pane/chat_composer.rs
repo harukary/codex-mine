@@ -280,6 +280,7 @@ impl ChatComposer {
         let was_disabled = self.disable_paste_burst;
         self.disable_paste_burst = disabled;
         if disabled && !was_disabled {
+            let _ = self.flush_paste_burst_before_non_char();
             self.paste_burst.clear_window_after_non_char();
         }
     }
@@ -342,6 +343,18 @@ impl ChatComposer {
 
     pub(crate) fn is_in_paste_burst(&self) -> bool {
         self.paste_burst.is_active()
+    }
+
+    fn flush_paste_burst_before_non_char(&mut self) -> bool {
+        if !self.paste_burst.is_active() {
+            return false;
+        }
+        if let Some(pasted) = self.paste_burst.flush_before_modified_input() {
+            self.handle_paste(pasted);
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn recommended_paste_flush_delay() -> Duration {
@@ -1300,6 +1313,13 @@ impl ChatComposer {
             return (InputResult::None, true);
         }
 
+        // If a burst is active, flush it before handling navigation or other
+        // non-character inputs so buffered text doesn't get re-inserted later
+        // at a mismatched cursor position.
+        if !matches!(input.code, KeyCode::Char(_)) && input.code != KeyCode::Enter {
+            let _ = self.flush_paste_burst_before_non_char();
+        }
+
         // Intercept plain Char inputs to optionally accumulate into a burst buffer.
         if let KeyEvent {
             code: KeyCode::Char(ch),
@@ -1995,6 +2015,7 @@ mod tests {
     use image::Rgba;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
+    use std::time::Instant;
     use tempfile::tempdir;
 
     use crate::app_event::AppEvent;
@@ -3983,6 +4004,36 @@ mod tests {
 
         assert_eq!(composer.textarea.text(), "z".repeat(count));
         assert!(composer.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn paste_burst_flushes_when_cursor_moves_before_next_char() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        composer
+            .paste_burst
+            .begin_with_retro_grabbed("旧文".to_string(), Instant::now());
+        composer.textarea.set_cursor(0);
+        assert!(composer.is_in_paste_burst());
+        assert_eq!(composer.textarea.text(), "");
+
+        let (_result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+
+        assert_eq!(composer.textarea.text(), "旧文");
+        assert!(!composer.is_in_paste_burst());
     }
 
     #[test]
