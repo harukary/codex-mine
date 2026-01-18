@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use crate::auth::CodexAuth;
 use crate::error::CodexErr;
+use crate::error::RateLimitedError;
 use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
 use crate::error::UsageLimitReachedError;
@@ -25,11 +26,13 @@ pub(crate) fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::Api { status, message } => CodexErr::UnexpectedStatus(UnexpectedResponseError {
             status,
             body: message,
+            url: None,
             request_id: None,
         }),
         ApiError::Transport(transport) => match transport {
             TransportError::Http {
                 status,
+                url,
                 headers,
                 body,
             } => {
@@ -63,14 +66,17 @@ pub(crate) fn map_api_error(err: ApiError) -> CodexErr {
                         }
                     }
 
-                    CodexErr::RetryLimit(RetryLimitReachedError {
+                    CodexErr::RateLimited(RateLimitedError {
                         status,
                         request_id: extract_request_id(headers.as_ref()),
+                        retry_after: extract_retry_after(headers.as_ref()),
+                        rate_limits: headers.as_ref().and_then(parse_rate_limit),
                     })
                 } else {
                     CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
                         body: body_text,
+                        url,
                         request_id: extract_request_id(headers.as_ref()),
                     })
                 }
@@ -100,7 +106,17 @@ fn extract_request_id(headers: Option<&HeaderMap>) -> Option<String> {
     })
 }
 
-pub(crate) async fn auth_provider_from_auth(
+fn extract_retry_after(headers: Option<&HeaderMap>) -> Option<std::time::Duration> {
+    let value = headers?
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())?
+        .trim();
+
+    let seconds: u64 = value.parse().ok()?;
+    Some(std::time::Duration::from_secs(seconds))
+}
+
+pub(crate) fn auth_provider_from_auth(
     auth: Option<CodexAuth>,
     provider: &ModelProviderInfo,
 ) -> crate::error::Result<CoreAuthProvider> {
@@ -119,7 +135,7 @@ pub(crate) async fn auth_provider_from_auth(
     }
 
     if let Some(auth) = auth {
-        let token = auth.get_token().await?;
+        let token = auth.get_token()?;
         Ok(CoreAuthProvider {
             token: Some(token),
             account_id: auth.get_account_id(),

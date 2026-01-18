@@ -22,8 +22,8 @@ import type { ModelListParams } from "../generated/v2/ModelListParams";
 import type { ModelListResponse } from "../generated/v2/ModelListResponse";
 import type { ThreadArchiveParams } from "../generated/v2/ThreadArchiveParams";
 import type { ThreadArchiveResponse } from "../generated/v2/ThreadArchiveResponse";
-import type { ThreadRewindParams } from "../generated/v2/ThreadRewindParams";
-import type { ThreadRewindResponse } from "../generated/v2/ThreadRewindResponse";
+import type { ThreadRollbackParams } from "../generated/v2/ThreadRollbackParams";
+import type { ThreadRollbackResponse } from "../generated/v2/ThreadRollbackResponse";
 import type { ThreadListParams } from "../generated/v2/ThreadListParams";
 import type { ThreadListResponse } from "../generated/v2/ThreadListResponse";
 import type { ListMcpServerStatusParams } from "../generated/v2/ListMcpServerStatusParams";
@@ -31,6 +31,10 @@ import type { ListMcpServerStatusResponse } from "../generated/v2/ListMcpServerS
 import type { GetAccountParams } from "../generated/v2/GetAccountParams";
 import type { GetAccountRateLimitsResponse } from "../generated/v2/GetAccountRateLimitsResponse";
 import type { GetAccountResponse } from "../generated/v2/GetAccountResponse";
+import type { ListAccountsResponse } from "../generated/v2/ListAccountsResponse";
+import type { LogoutAccountResponse } from "../generated/v2/LogoutAccountResponse";
+import type { SwitchAccountParams } from "../generated/v2/SwitchAccountParams";
+import type { SwitchAccountResponse } from "../generated/v2/SwitchAccountResponse";
 import type { ApprovalDecision } from "../generated/v2/ApprovalDecision";
 import type { CommandExecutionRequestApprovalResponse } from "../generated/v2/CommandExecutionRequestApprovalResponse";
 import type { FileChangeRequestApprovalResponse } from "../generated/v2/FileChangeRequestApprovalResponse";
@@ -166,15 +170,6 @@ export class BackendProcess implements vscode.Disposable {
     });
   }
 
-  public async threadReload(
-    params: ThreadResumeParams,
-  ): Promise<ThreadResumeResponse> {
-    return this.rpc.request<ThreadResumeResponse>({
-      method: "thread/reload",
-      params,
-    });
-  }
-
   public async threadArchive(
     params: ThreadArchiveParams,
   ): Promise<ThreadArchiveResponse> {
@@ -193,11 +188,11 @@ export class BackendProcess implements vscode.Disposable {
     });
   }
 
-  public async threadRewind(
-    params: ThreadRewindParams,
-  ): Promise<ThreadRewindResponse> {
-    return this.rpc.request<ThreadRewindResponse>({
-      method: "thread/rewind",
+  public async threadRollback(
+    params: ThreadRollbackParams,
+  ): Promise<ThreadRollbackResponse> {
+    return this.rpc.request<ThreadRollbackResponse>({
+      method: "thread/rollback",
       params,
     });
   }
@@ -269,6 +264,29 @@ export class BackendProcess implements vscode.Disposable {
     return this.rpc.request<GetAccountResponse>({
       method: "account/read",
       params,
+    });
+  }
+
+  public async accountList(): Promise<ListAccountsResponse> {
+    return this.rpc.request<ListAccountsResponse>({
+      method: "account/list",
+      params: undefined,
+    });
+  }
+
+  public async accountSwitch(
+    params: SwitchAccountParams,
+  ): Promise<SwitchAccountResponse> {
+    return this.rpc.request<SwitchAccountResponse>({
+      method: "account/switch",
+      params,
+    });
+  }
+
+  public async accountLogout(): Promise<LogoutAccountResponse> {
+    return this.rpc.request<LogoutAccountResponse>({
+      method: "account/logout",
+      params: undefined,
     });
   }
 

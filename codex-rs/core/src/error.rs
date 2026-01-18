@@ -8,7 +8,7 @@ use chrono::Datelike;
 use chrono::Local;
 use chrono::Utc;
 use codex_async_utils::CancelErr;
-use codex_protocol::ConversationId;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
@@ -22,7 +22,7 @@ use tokio::task::JoinError;
 pub type Result<T> = std::result::Result<T, CodexErr>;
 
 /// Limit UI error messages to a reasonable size while keeping useful context.
-const ERROR_MESSAGE_UI_MAX_BYTES: usize = 2 * 1024; // 4 KiB
+const ERROR_MESSAGE_UI_MAX_BYTES: usize = 2 * 1024; // 2 KiB
 
 #[derive(Error, Debug)]
 pub enum SandboxErr {
@@ -71,12 +71,12 @@ pub enum CodexErr {
     Stream(String, Option<Duration>),
 
     #[error(
-        "Codex ran out of room in the model's context window. Start a new conversation or clear earlier history before retrying."
+        "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
     )]
     ContextWindowExceeded,
 
-    #[error("no conversation with id: {0}")]
-    ConversationNotFound(ConversationId),
+    #[error("no thread with id: {0}")]
+    ThreadNotFound(ThreadId),
 
     #[error("session configured event was not the first event in the stream")]
     SessionConfiguredNotFirstEvent,
@@ -126,6 +126,10 @@ pub enum CodexErr {
 
     #[error("We're currently experiencing high demand, which may cause temporary errors.")]
     InternalServerError,
+
+    /// Rate limit reached (HTTP 429).
+    #[error("{0}")]
+    RateLimited(RateLimitedError),
 
     /// Retry limit exceeded.
     #[error("{0}")]
@@ -178,6 +182,44 @@ pub enum CodexErr {
 impl From<CancelErr> for CodexErr {
     fn from(_: CancelErr) -> Self {
         CodexErr::TurnAborted
+    }
+}
+
+impl CodexErr {
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            CodexErr::TurnAborted
+            | CodexErr::Interrupted
+            | CodexErr::EnvVar(_)
+            | CodexErr::Fatal(_)
+            | CodexErr::UsageNotIncluded
+            | CodexErr::QuotaExceeded
+            | CodexErr::InvalidImageRequest()
+            | CodexErr::InvalidRequest(_)
+            | CodexErr::RefreshTokenFailed(_)
+            | CodexErr::UnsupportedOperation(_)
+            | CodexErr::Sandbox(_)
+            | CodexErr::LandlockSandboxExecutableNotProvided
+            | CodexErr::RateLimited(_)
+            | CodexErr::RetryLimit(_)
+            | CodexErr::ContextWindowExceeded
+            | CodexErr::ThreadNotFound(_)
+            | CodexErr::Spawn
+            | CodexErr::SessionConfiguredNotFirstEvent
+            | CodexErr::UsageLimitReached(_) => false,
+            CodexErr::Stream(..)
+            | CodexErr::Timeout
+            | CodexErr::UnexpectedStatus(_)
+            | CodexErr::ResponseStreamFailed(_)
+            | CodexErr::ConnectionFailed(_)
+            | CodexErr::InternalServerError
+            | CodexErr::InternalAgentDied
+            | CodexErr::Io(_)
+            | CodexErr::Json(_)
+            | CodexErr::TokioJoin(_) => true,
+            #[cfg(target_os = "linux")]
+            CodexErr::LandlockRuleset(_) | CodexErr::LandlockPathFd(_) => false,
+        }
     }
 }
 
@@ -240,6 +282,7 @@ pub enum RefreshTokenFailedReason {
 pub struct UnexpectedResponseError {
     pub status: StatusCode,
     pub body: String,
+    pub url: Option<String>,
     pub request_id: Option<String>,
 }
 
@@ -256,7 +299,11 @@ impl UnexpectedResponseError {
             return None;
         }
 
-        let mut message = format!("{CLOUDFLARE_BLOCKED_MESSAGE} (status {})", self.status);
+        let status = self.status;
+        let mut message = format!("{CLOUDFLARE_BLOCKED_MESSAGE} (status {status})");
+        if let Some(url) = &self.url {
+            message.push_str(&format!(", url: {url}"));
+        }
         if let Some(id) = &self.request_id {
             message.push_str(&format!(", request id: {id}"));
         }
@@ -270,16 +317,16 @@ impl std::fmt::Display for UnexpectedResponseError {
         if let Some(friendly) = self.friendly_message() {
             write!(f, "{friendly}")
         } else {
-            write!(
-                f,
-                "unexpected status {}: {}{}",
-                self.status,
-                self.body,
-                self.request_id
-                    .as_ref()
-                    .map(|id| format!(", request id: {id}"))
-                    .unwrap_or_default()
-            )
+            let status = self.status;
+            let body = &self.body;
+            let mut message = format!("unexpected status {status}: {body}");
+            if let Some(url) = &self.url {
+                message.push_str(&format!(", url: {url}"));
+            }
+            if let Some(id) = &self.request_id {
+                message.push_str(&format!(", request id: {id}"));
+            }
+            write!(f, "{message}")
         }
     }
 }
@@ -302,6 +349,28 @@ impl std::fmt::Display for RetryLimitReachedError {
                 .map(|id| format!(", request id: {id}"))
                 .unwrap_or_default()
         )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RateLimitedError {
+    pub status: StatusCode,
+    pub request_id: Option<String>,
+    pub retry_after: Option<Duration>,
+    pub rate_limits: Option<RateLimitSnapshot>,
+}
+
+impl std::fmt::Display for RateLimitedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let status = self.status;
+        write!(f, "rate limited (status {status})")?;
+        if let Some(retry_after) = self.retry_after {
+            write!(f, ", retry after {}s", retry_after.as_secs())?;
+        }
+        if let Some(id) = &self.request_id {
+            write!(f, ", request id: {id}")?;
+        }
+        Ok(())
     }
 }
 
@@ -442,6 +511,9 @@ impl CodexErr {
             CodexErr::UsageLimitReached(_)
             | CodexErr::QuotaExceeded
             | CodexErr::UsageNotIncluded => CodexErrorInfo::UsageLimitExceeded,
+            CodexErr::RateLimited(_) => CodexErrorInfo::RateLimited {
+                http_status_code: self.http_status_code_value(),
+            },
             CodexErr::RetryLimit(_) => CodexErrorInfo::ResponseTooManyFailedAttempts {
                 http_status_code: self.http_status_code_value(),
             },
@@ -455,7 +527,7 @@ impl CodexErr {
             CodexErr::SessionConfiguredNotFirstEvent
             | CodexErr::InternalServerError
             | CodexErr::InternalAgentDied => CodexErrorInfo::InternalServerError,
-            CodexErr::UnsupportedOperation(_) | CodexErr::ConversationNotFound(_) => {
+            CodexErr::UnsupportedOperation(_) | CodexErr::ThreadNotFound(_) => {
                 CodexErrorInfo::BadRequest
             }
             CodexErr::Sandbox(_) => CodexErrorInfo::SandboxError,
@@ -478,6 +550,7 @@ impl CodexErr {
     pub fn http_status_code_value(&self) -> Option<u16> {
         let http_status_code = match self {
             CodexErr::RetryLimit(err) => Some(err.status),
+            CodexErr::RateLimited(err) => Some(err.status),
             CodexErr::UnexpectedStatus(err) => Some(err.status),
             CodexErr::ConnectionFailed(err) => err.source.status(),
             CodexErr::ResponseStreamFailed(err) => err.source.status(),
@@ -661,6 +734,27 @@ mod tests {
     }
 
     #[test]
+    fn rate_limited_error_formats_with_retry_after_and_request_id() {
+        let err = CodexErr::RateLimited(RateLimitedError {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            request_id: Some("req-123".to_string()),
+            retry_after: Some(Duration::from_secs(42)),
+            rate_limits: None,
+        });
+
+        assert_eq!(
+            err.to_string(),
+            "rate limited (status 429 Too Many Requests), retry after 42s, request id: req-123"
+        );
+        assert_eq!(
+            err.to_codex_protocol_error(),
+            CodexErrorInfo::RateLimited {
+                http_status_code: Some(429)
+            }
+        );
+    }
+
+    #[test]
     fn sandbox_denied_reports_exit_code_when_no_output_available() {
         let output = ExecToolCallOutput {
             exit_code: 13,
@@ -789,12 +883,16 @@ mod tests {
             status: StatusCode::FORBIDDEN,
             body: "<html><body>Cloudflare error: Sorry, you have been blocked</body></html>"
                 .to_string(),
+            url: Some("http://example.com/blocked".to_string()),
             request_id: Some("ray-id".to_string()),
         };
         let status = StatusCode::FORBIDDEN.to_string();
+        let url = "http://example.com/blocked";
         assert_eq!(
             err.to_string(),
-            format!("{CLOUDFLARE_BLOCKED_MESSAGE} (status {status}), request id: ray-id")
+            format!(
+                "{CLOUDFLARE_BLOCKED_MESSAGE} (status {status}), url: {url}, request id: ray-id"
+            )
         );
     }
 
@@ -803,12 +901,14 @@ mod tests {
         let err = UnexpectedResponseError {
             status: StatusCode::FORBIDDEN,
             body: "plain text error".to_string(),
+            url: Some("http://example.com/plain".to_string()),
             request_id: None,
         };
         let status = StatusCode::FORBIDDEN.to_string();
+        let url = "http://example.com/plain";
         assert_eq!(
             err.to_string(),
-            format!("unexpected status {status}: plain text error")
+            format!("unexpected status {status}: plain text error, url: {url}")
         );
     }
 

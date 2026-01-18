@@ -12,11 +12,16 @@ import type { ApprovalDecision } from "../generated/v2/ApprovalDecision";
 import type { AskUserQuestionResponse } from "../generated/v2/AskUserQuestionResponse";
 import type { ServerRequest } from "../generated/ServerRequest";
 import type { ThreadResumeResponse } from "../generated/v2/ThreadResumeResponse";
+import type { ThreadRollbackResponse } from "../generated/v2/ThreadRollbackResponse";
 import type { ModelListResponse } from "../generated/v2/ModelListResponse";
 import type { Model } from "../generated/v2/Model";
 import type { ReasoningEffort } from "../generated/ReasoningEffort";
 import type { GetAccountResponse } from "../generated/v2/GetAccountResponse";
 import type { GetAccountRateLimitsResponse } from "../generated/v2/GetAccountRateLimitsResponse";
+import type { ListAccountsResponse } from "../generated/v2/ListAccountsResponse";
+import type { LogoutAccountResponse } from "../generated/v2/LogoutAccountResponse";
+import type { SwitchAccountParams } from "../generated/v2/SwitchAccountParams";
+import type { SwitchAccountResponse } from "../generated/v2/SwitchAccountResponse";
 import type { SkillsListEntry } from "../generated/v2/SkillsListEntry";
 import type { Thread } from "../generated/v2/Thread";
 import type { AnyServerNotification } from "./types";
@@ -465,7 +470,7 @@ export class BackendManager implements vscode.Disposable {
       baseInstructions: null,
       developerInstructions: null,
     };
-    return await proc.threadReload(params);
+    return await proc.threadResume(params);
   }
 
   public async archiveSession(session: Session): Promise<void> {
@@ -496,6 +501,51 @@ export class BackendManager implements vscode.Disposable {
     if (!proc)
       throw new Error("Backend is not running for this workspace folder");
     return await proc.accountRead({ refreshToken: false });
+  }
+
+  public async listAccounts(session: Session): Promise<ListAccountsResponse> {
+    const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
+    if (!folder) {
+      throw new Error(
+        `WorkspaceFolder not found for session: ${session.workspaceFolderUri}`,
+      );
+    }
+    await this.startForWorkspaceFolder(folder);
+    const proc = this.processes.get(session.backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+    return await proc.accountList();
+  }
+
+  public async switchAccount(
+    session: Session,
+    params: SwitchAccountParams,
+  ): Promise<SwitchAccountResponse> {
+    const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
+    if (!folder) {
+      throw new Error(
+        `WorkspaceFolder not found for session: ${session.workspaceFolderUri}`,
+      );
+    }
+    await this.startForWorkspaceFolder(folder);
+    const proc = this.processes.get(session.backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+    return await proc.accountSwitch(params);
+  }
+
+  public async logoutAccount(session: Session): Promise<LogoutAccountResponse> {
+    const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
+    if (!folder) {
+      throw new Error(
+        `WorkspaceFolder not found for session: ${session.workspaceFolderUri}`,
+      );
+    }
+    await this.startForWorkspaceFolder(folder);
+    const proc = this.processes.get(session.backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+    return await proc.accountLogout();
   }
 
   public async readRateLimits(
@@ -557,7 +607,7 @@ export class BackendManager implements vscode.Disposable {
       throw new Error("Backend is not running for this workspace folder");
 
     const input: UserInput[] = [];
-    if (text.trim()) input.push({ type: "text", text });
+    if (text.trim()) input.push({ type: "text", text, text_elements: [] });
     for (const img of images) {
       if (!img) continue;
       if (img.kind === "imageUrl") {
@@ -588,6 +638,7 @@ export class BackendManager implements vscode.Disposable {
       model: modelSettings?.model ?? null,
       effort,
       summary: null,
+      outputSchema: null,
     };
 
     const imageSuffix = images.length > 0 ? ` [images=${images.length}]` : "";
@@ -617,10 +668,10 @@ export class BackendManager implements vscode.Disposable {
     await proc.turnInterrupt({ threadId: session.threadId, turnId });
   }
 
-  public async threadRewind(
+  public async threadRollback(
     session: Session,
-    args: { turnIndex: number },
-  ): Promise<void> {
+    args: { numTurns: number },
+  ): Promise<ThreadRollbackResponse> {
     const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
     if (!folder) {
       throw new Error(
@@ -633,10 +684,14 @@ export class BackendManager implements vscode.Disposable {
     if (!proc)
       throw new Error("Backend is not running for this workspace folder");
 
-    await proc.threadRewind({
+    // Clear per-thread caches so the UI can rehydrate from the updated thread state.
+    this.itemsByThreadId.delete(session.threadId);
+    this.latestDiffByThreadId.delete(session.threadId);
+    this.streamState.set(session.threadId, { activeTurnId: null });
+
+    return await proc.threadRollback({
       threadId: session.threadId,
-      turnIndex: args.turnIndex,
-      scope: "conversation",
+      numTurns: args.numTurns,
     });
   }
 
